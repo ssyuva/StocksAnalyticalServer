@@ -14,25 +14,51 @@
 #include <algorithm>
 #include <cstdint>
 #include <pthread.h>
+#include <poll.h>
+#include <unistd.h>
+#include <string.h>
+#include <fcntl.h>
 
 using namespace std;
 
+//Trade Packet (Sent from Worker 1 to Worker 2)
+struct tradepacket {
+	char   sym[15];
+	double price;
+	double qty;
+	uint64_t ts2;
+};
+
 void *trade_data_reader(void *msg);
+void *fsm_thread_bar_calc(void *msg);
 vector<string> tokenize(const char *str, char c);
 bool parse_trade(string line, map<string, string> & trdmap);
+
+int pfd[2];
 
 int main()
 {
 	const char *tradefile = "trades.json";
 	pthread_t trade_reader;
+	pthread_t fsm_thread;
 
-	int retval;
+	//create the pipe for data sharing between worker 1 and worker 2
+	pipe(pfd);
 
-	retval = pthread_create(&trade_reader, NULL, trade_data_reader, (void *) tradefile);
+	int retval_1;
+
+	retval_1 = pthread_create(&trade_reader, NULL, trade_data_reader, (void *) tradefile);
+
+	int retval_2;
+	const char *name = "FSM Thread";
+	retval_2 = pthread_create(&fsm_thread, NULL, fsm_thread_bar_calc, (void *) name);
+
 	pthread_join(trade_reader, NULL);
+	pthread_join(fsm_thread, NULL);
 
 	return 0;
 }
+
 
 
 
@@ -51,7 +77,7 @@ void *trade_data_reader(void *msg) {
 		for (char c: delchars) {
 			line.erase( remove(line.begin(), line.end(), c), line.end());
 		}
-		cout << "Stripped line: " << line << endl;
+		//cout << "Trade Reader Thread => Stripped line: " << line << endl;
 
 		map<string, string> trademap;
 		parse_trade(line, trademap);
@@ -83,7 +109,17 @@ void *trade_data_reader(void *msg) {
 			}
 		}
 		
-		cout << "Parsed Trade: " << "sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
+		//cout << "Trade Reader Thread => Parsed Trade: " << "sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
+
+		//Create trade packet and deliver
+		tradepacket tp;
+		strcpy(tp.sym, symbol.c_str());
+		tp.price = price;
+		tp.qty   = qty;
+		tp.ts2   = ts2;
+
+		//write into the pipe that takes the data to fsm thread
+		write(pfd[1], &tp, sizeof(tp));
 	}
 }
 
@@ -128,4 +164,44 @@ vector<string> tokenize(const char *str, char c)
     } while (0 != *str++);
 
     return result;
+}
+
+
+
+//Thread 2: FSM thread. Reads trade packets from Worker 1 and calculates bar OHLC values
+void *fsm_thread_bar_calc(void *msg)
+{
+	struct pollfd fds[1];
+	fds[0].fd = pfd[0];
+	fds[0].events = POLLIN;
+	tradepacket tp;
+
+	while(1) {
+		int timeout_msecs = 2 * 1000;
+		int ret = poll(fds, 1, timeout_msecs);
+
+		if (ret > 0) {
+			if (fds[0].revents & POLLIN) {
+
+				if ( fcntl( fds[0].fd, F_SETFL, fcntl(fds[0].fd, F_GETFL) | O_NONBLOCK ) < 0 ) {
+					cout << "FSM Thread => Error setting nonblocking flag for incoming data pipe" << endl;
+					exit(0);
+				}
+
+				int r;
+				while( (r = read(fds[0].fd, &tp, sizeof(tp))) > 0)  {
+					char symbol[15];
+					strcpy(symbol, tp.sym);
+					double price = tp.price;
+					double qty   = tp.qty;
+					uint64_t ts2 = tp.ts2; 
+
+					cout << "FSM Thread => read tradepacket : sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
+				}
+			}
+		}
+		else {
+			cout << "FSM Thread => Timeout occured while reading trade data. No trade data to read from source pipe fd" << endl;
+		}
+	}
 }
