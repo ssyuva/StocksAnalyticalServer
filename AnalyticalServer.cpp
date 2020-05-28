@@ -29,12 +29,66 @@ struct tradepacket {
 	uint64_t ts2;
 };
 
+//FSM States
+enum FSM_States {FSM_STARTING = 0, FSM_READY = 1, FSM_DOWN = 2, FSM_STATE_COUNT};
+vector<string> FSM_State_Name = { "FSM_STARTING", "FSM_READY", "FSM_DOWN", "FSM_STATE_INVALID" };
+
+
+//Events processed by the FSM and the associated data
+enum FSM_Event_Types {TRADE_PKT_ARRIVAL = 0, TIMER_EXPIRY = 1, EVENT_TYPE_COUNT};
+vector<string> FSM_Event_Type_Name = { "TRADE_PKT_ARRIVAL", "TIMER_EXPIRY", "EVENT_TYPE_INVALID" };
+
+
+struct FSM_Event_Data_Trade_Pkt {
+	char   sym[15];
+	double price;
+	double qty;
+	uint64_t ts2;
+};
+
+
+struct FSM_Event_Data_Timer_Exp {
+	uint64_t ts;
+};
+
+
+union FSM_Event_Data {
+	FSM_Event_Data_Trade_Pkt trd_pkt;
+	FSM_Event_Data_Timer_Exp tmr_exp;
+};
+
+struct FSM_EVENT {
+	FSM_Event_Types type;
+	FSM_Event_Data  data;
+};
+
+
+//FSM Event Handler Type
+typedef bool (*FSM_EVENT_HANDLER) (FSM_EVENT &);
+
+
+//Function prototypes
 void *trade_data_reader(void *msg);
 void *fsm_thread_bar_calc(void *msg);
+bool fsm_fire_event(FSM_EVENT & fsm_ev);
+bool process_fsm_starting(FSM_EVENT & fsm_ev);
+bool process_fsm_down(FSM_EVENT & fsm_ev);
+bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev);
+bool process_fsm_ready_ev_tmr_expiry(FSM_EVENT & fsm_ev);
+bool process_fsm_event(FSM_EVENT & fsm_ev);
+
 vector<string> tokenize(const char *str, char c);
 bool parse_trade(string line, map<string, string> & trdmap);
 
+FSM_EVENT_HANDLER FSM_Ev_Handler_Table[FSM_STATE_COUNT][EVENT_TYPE_COUNT] = {
+																				process_fsm_starting, process_fsm_starting,
+																				process_fsm_ready_ev_trd_pkt_arrival, process_fsm_ready_ev_tmr_expiry,
+																				process_fsm_down, process_fsm_down	
+																			};
+
+
 int pfd[2];
+FSM_States fsm_curr_state = FSM_STARTING;
 
 int main()
 {
@@ -168,6 +222,21 @@ vector<string> tokenize(const char *str, char c)
 
 
 
+//Ticker Context
+struct TickerCtxt {
+	unsigned int bar_num;
+	uint64_t     start_time;
+	uint64_t     close_time;
+	double		 bar_open;
+	double       bar_high;
+	double       bar_low;
+	double       bar_close;
+	double       bar_volume;
+};
+
+
+
+
 //Thread 2: FSM thread. Reads trade packets from Worker 1 and calculates bar OHLC values
 void *fsm_thread_bar_calc(void *msg)
 {
@@ -175,6 +244,9 @@ void *fsm_thread_bar_calc(void *msg)
 	fds[0].fd = pfd[0];
 	fds[0].events = POLLIN;
 	tradepacket tp;
+
+	//set fsm_curr_state to FSM_READY
+	fsm_curr_state = FSM_READY;
 
 	while(1) {
 		int timeout_msecs = 2 * 1000;
@@ -197,6 +269,15 @@ void *fsm_thread_bar_calc(void *msg)
 					uint64_t ts2 = tp.ts2; 
 
 					cout << "FSM Thread => read tradepacket : sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
+					//Create a trade packet arrival event and fire it
+
+					FSM_EVENT fsm_ev;
+					fsm_ev.type = TRADE_PKT_ARRIVAL;
+					strcpy(fsm_ev.data.trd_pkt.sym, symbol);
+					fsm_ev.data.trd_pkt.price = price;
+					fsm_ev.data.trd_pkt.qty = qty;
+					fsm_ev.data.trd_pkt.ts2 = ts2;
+					fsm_fire_event(fsm_ev);
 				}
 			}
 		}
@@ -204,4 +285,56 @@ void *fsm_thread_bar_calc(void *msg)
 			cout << "FSM Thread => Timeout occured while reading trade data. No trade data to read from source pipe fd" << endl;
 		}
 	}
+}
+
+
+//Fire FSM Event
+bool fsm_fire_event(FSM_EVENT & fsm_ev) {
+	process_fsm_event(fsm_ev);
+return true;
+}
+
+//Process events while FSM_State == FSM_STARTING. Ignore all events received at this stage
+bool process_fsm_starting(FSM_EVENT & fsm_ev) {
+
+	cout << "FSM Thread => event arrived. Ignoring as state = " << FSM_State_Name[fsm_curr_state] << endl;
+return true;
+}
+
+//Process events while FSM_State == FSM_DOWN. Ignore all events received at this stage
+bool process_fsm_down(FSM_EVENT & fsm_ev) {
+
+	cout << "FSM Thread => event arrived. Ignoring as state = " << FSM_State_Name[fsm_curr_state] << endl;
+return true;
+}
+
+//Process events TRADE_PKT_ARRIVAL while FSM_State == FSM_READY
+bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
+	
+	char symbol[15];
+	strcpy(symbol, fsm_ev.data.trd_pkt.sym);
+	double price = fsm_ev.data.trd_pkt.price;
+	double qty   = fsm_ev.data.trd_pkt.qty;
+	uint64_t ts2 = fsm_ev.data.trd_pkt.ts2; 
+
+	cout << "FSM Thread => event arrived = trd_pkt_arrival: sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
+
+return true;
+}
+
+//Process events TIMER_EXPIRY while FSM_State == FSM_READY
+bool process_fsm_ready_ev_tmr_expiry(FSM_EVENT & fsm_ev) {
+	uint64_t ts = fsm_ev.data.tmr_exp.ts; 
+	cout << "FSM Thread => event arrived = timer_expiry: " << "TS = " << ts << endl;
+return true;
+}
+
+
+//Process FSM Event - Demulitplex based on the fsm_curr_state and event type
+bool process_fsm_event(FSM_EVENT & fsm_ev) {
+	FSM_Event_Types ev_type = fsm_ev.type;	
+	cout << "FSM Thread => dispatching event " << FSM_Event_Type_Name[ev_type] << " to handler function" << endl; 
+	(*FSM_Ev_Handler_Table[fsm_curr_state][ev_type])(fsm_ev);
+
+return true;
 }
