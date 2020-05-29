@@ -43,19 +43,50 @@ struct BarCntxt {
 	double       bar_volume;
 };
 
+
 //Bar Types
-enum Bar_Type {CLOSING_BAR = 0, TRADE_BAR = 1, TIMER_EXP_CLOSING_BAR = 2, BAR_TYPE_COUNT};
-vector<string> Bar_Type_Name = { "CLOSING_BAR", "TRADE_BAR", "TIMER_EXP_CLOSING_BAR", "BAR_TYPE_INVALID" };
+enum Bar_Type {  CLOSING_BAR = 0, 
+                 TRADE_BAR = 1, 
+                 TIMER_EXP_CLOSING_BAR = 2, 
+                 TIMER_EXP_OPENING_BAR = 3, 
+                 BAR_TYPE_COUNT
+              };
+
+vector<string> Bar_Type_Name = { "CLOSING_BAR", 
+                                 "TRADE_BAR", 
+                                 "TIMER_EXP_CLOSING_BAR", 
+                                 "TIMER_EXP_OPENING_BAR", 
+                                 "BAR_TYPE_INVALID" 
+                               };
 
 //FSM States
-enum FSM_States {FSM_STARTING = 0, FSM_READY = 1, FSM_DOWN = 2, FSM_STATE_COUNT};
-vector<string> FSM_State_Name = { "FSM_STARTING", "FSM_READY", "FSM_DOWN", "FSM_STATE_INVALID" };
+enum FSM_States {  FSM_STARTING = 0, 
+                   FSM_READY = 1, 
+                   FSM_DOWN = 2, 
+                   FSM_STATE_COUNT 
+                };
+
+vector<string> FSM_State_Name = { "FSM_STARTING", 
+                                  "FSM_READY", 
+                                  "FSM_DOWN", 
+                                  "FSM_STATE_INVALID" 
+                                };
+
 
 
 //Events processed by the FSM and the associated data
-enum FSM_Event_Types {TRADE_PKT_ARRIVAL = 0, TIMER_EXPIRY = 1, EVENT_TYPE_COUNT};
-vector<string> FSM_Event_Type_Name = { "TRADE_PKT_ARRIVAL", "TIMER_EXPIRY", "EVENT_TYPE_INVALID" };
+enum FSM_Event_Types { TRADE_PKT_ARRIVAL = 0, 
+                       TIMER_EXPIRY = 1, 
+                       EVENT_TYPE_COUNT
+                     };
 
+vector<string> FSM_Event_Type_Name = { "TRADE_PKT_ARRIVAL", 
+                                       "TIMER_EXPIRY", 
+                                       "EVENT_TYPE_INVALID" 
+                                     };
+
+
+//FSM Events Data
 
 struct FSM_Event_Data_Trade_Pkt {
 	char   sym[15];
@@ -111,7 +142,7 @@ int pfd[2];
 FSM_States fsm_curr_state = FSM_STARTING;
 map<string, BarCntxt> bar_cntxt_cache;
 
-const uint64_t fifteen_min_millisecs = 15 * 60 * 1000 * 10 * 100 ;
+const uint64_t fifteen_min_microsecs = 15 * 60 * 1000 * 10 * 100 ;
 
 int main()
 {
@@ -347,7 +378,7 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 		strcpy(newcntxt.sym, symbol);
 		newcntxt.bar_num        = 1;
 		newcntxt.bar_start_time = ts2;
-		newcntxt.bar_close_time = ts2 + fifteen_min_millisecs;
+		newcntxt.bar_close_time = ts2 + fifteen_min_microsecs;
 		newcntxt.bar_open       = price;
 		newcntxt.bar_high       = price;
 		newcntxt.bar_low        = price;
@@ -398,7 +429,7 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 					strcpy(newcntxt.sym, symbol);
 					newcntxt.bar_num        = oldcntxt.bar_num + 1;
 					newcntxt.bar_start_time = oldcntxt.bar_close_time + 1;
-					newcntxt.bar_close_time = newcntxt.bar_start_time + fifteen_min_millisecs;
+					newcntxt.bar_close_time = newcntxt.bar_start_time + fifteen_min_microsecs;
 					newcntxt.bar_open       = oldcntxt.bar_close;
 					newcntxt.bar_high       = oldcntxt.bar_close;
 					newcntxt.bar_low        = oldcntxt.bar_close;
@@ -466,7 +497,7 @@ bool process_fsm_ready_ev_tmr_expiry(FSM_EVENT & fsm_ev) {
 			strcpy(newcntxt.sym, barcntxt.sym);
 			newcntxt.bar_num        = barcntxt.bar_num + 1;
 			newcntxt.bar_start_time = barcntxt.bar_close_time + 1;
-			newcntxt.bar_close_time = newcntxt.bar_start_time + fifteen_min_millisecs;
+			newcntxt.bar_close_time = newcntxt.bar_start_time + fifteen_min_microsecs;
 			newcntxt.bar_open       = barcntxt.bar_close;
 			newcntxt.bar_high       = barcntxt.bar_close;
 			newcntxt.bar_low        = barcntxt.bar_close;
