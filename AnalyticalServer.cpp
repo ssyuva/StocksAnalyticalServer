@@ -44,8 +44,8 @@ struct BarCntxt {
 };
 
 //Bar Types
-enum Bar_Type {CLOSING_BAR = 0, TRADE_BAR = 1, BAR_TYPE_COUNT};
-vector<string> Bar_Type_Name = { "CLOSING_BAR", "TRADE_BAR", "BAR_TYPE_INVALID" };
+enum Bar_Type {CLOSING_BAR = 0, TRADE_BAR = 1, TIMER_EXP_CLOSING_BAR = 2, BAR_TYPE_COUNT};
+vector<string> Bar_Type_Name = { "CLOSING_BAR", "TRADE_BAR", "TIMER_EXP_CLOSING_BAR", "BAR_TYPE_INVALID" };
 
 //FSM States
 enum FSM_States {FSM_STARTING = 0, FSM_READY = 1, FSM_DOWN = 2, FSM_STATE_COUNT};
@@ -325,6 +325,7 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 	double price = fsm_ev.data.trd_pkt.price;
 	double qty   = fsm_ev.data.trd_pkt.qty;
 	uint64_t ts2 = fsm_ev.data.trd_pkt.ts2; 
+	uint64_t expired_timestamp = ts2; 
 
 	cout << "FSM Thread => event arrived = trd_pkt_arrival: sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
 
@@ -355,7 +356,9 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 	
 		//store the new context in cache
 		bar_cntxt_cache.insert( pair<string, BarCntxt>(sym, newcntxt) );
+
 		//TODO - update subscribers on bar open
+		fsm_emit_bar(newcntxt, TRADE_BAR);
 	}
 	else {
 		//bars context exist, update it
@@ -381,9 +384,9 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 			it->second = oldcntxt;
 		
 		//TODO - remove debug
+		//TODO - update subscribers on trade update
 		fsm_emit_bar(oldcntxt, TRADE_BAR);
 
-			//TODO - update subscribers on trade update
 		}
 		else {
 			    //trade goes into next bar or someother future bar
@@ -419,10 +422,80 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 				oldcntxt.bar_close    = price;
 				oldcntxt.bar_volume  += qty;
 				it->second = oldcntxt;
-				fsm_emit_bar(oldcntxt, TRADE_BAR);
+
 				//TODO - update subscribers on trade update
+				fsm_emit_bar(oldcntxt, TRADE_BAR);
 		}
 	}
+
+	//Create a timer expiry event for the currently processed UTC timestamp. Let's all progress together, bring others along
+
+	//Ideally there should be a timer expiry event triggered by the system every few microseconds. But we don't have time for that
+	//when we try to replay the existing trades and build bars for existing trades. May be in future we can make all three threads
+	//react to a single underlying timer that emits timer expiry events that becomes the blood flow of the system and triggers
+	//time-scynced processing everywhere.
+
+	//This timer-expiry will hook along the processing in other tickers as well
+	FSM_EVENT fsm_tmr_ev;
+	fsm_tmr_ev.type = TIMER_EXPIRY;
+	fsm_tmr_ev.data.tmr_exp.ts = expired_timestamp;
+	fsm_fire_event(fsm_tmr_ev);
+
+return true;
+}
+
+
+
+
+//Process events TIMER_EXPIRY while FSM_State == FSM_READY
+bool process_fsm_ready_ev_tmr_expiry(FSM_EVENT & fsm_ev) {
+	uint64_t expired_ts = fsm_ev.data.tmr_exp.ts; 
+	cout << "FSM Thread => event arrived = timer_expiry: " << "TS = " << expired_ts << endl;
+
+	//Iterate the bar cache and close the bars that have expired
+	for( auto it = bar_cntxt_cache.begin() ; it != bar_cntxt_cache.end() ; it++ ) {
+		string   sym       = it->first;
+		BarCntxt barcntxt  = it->second;
+		uint64_t bar_close_time = barcntxt.bar_close_time; 
+		cout << "FSM Thread => processing timer_expiry: " << "symbol = " << sym << ", bar_close_time = " << bar_close_time << ", expired_ts = " << expired_ts << endl;
+
+	 while (expired_ts > bar_close_time ) {
+
+			// keep closing the current bar until the bar that accomodates the current expired timestamp opens up
+			BarCntxt newcntxt;
+			strcpy(newcntxt.sym, barcntxt.sym);
+			newcntxt.bar_num        = barcntxt.bar_num + 1;
+			newcntxt.bar_start_time = barcntxt.bar_close_time + 1;
+			newcntxt.bar_close_time = newcntxt.bar_start_time + fifteen_min_millisecs;
+			newcntxt.bar_open       = barcntxt.bar_close;
+			newcntxt.bar_high       = barcntxt.bar_close;
+			newcntxt.bar_low        = barcntxt.bar_close;
+			newcntxt.bar_close      = barcntxt.bar_close;
+			newcntxt.bar_volume     = 0;
+
+			//emit closing bar info to worker 3 
+			fsm_emit_bar(barcntxt, TIMER_EXP_CLOSING_BAR);
+
+			//emit opening bar info to worker 3 
+			fsm_emit_bar(newcntxt, TIMER_EXP_OPENING_BAR);
+
+			//update the bar cache with current bar info
+			it->second = newcntxt;
+			bar_close_time = newcntxt.bar_close_time;
+			barcntxt = newcntxt;
+		}
+	} 
+return true;
+}
+
+
+
+//Process FSM Event - Demulitplex based on the fsm_curr_state and event type
+bool process_fsm_event(FSM_EVENT & fsm_ev) {
+	FSM_Event_Types ev_type = fsm_ev.type;	
+	cout << "FSM Thread => dispatching event " << FSM_Event_Type_Name[ev_type] << " to handler function" << endl; 
+	(*FSM_Ev_Handler_Table[fsm_curr_state][ev_type])(fsm_ev);
+
 return true;
 }
 
@@ -453,20 +526,3 @@ bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 	             << endl;
 }
 
-
-//Process events TIMER_EXPIRY while FSM_State == FSM_READY
-bool process_fsm_ready_ev_tmr_expiry(FSM_EVENT & fsm_ev) {
-	uint64_t ts = fsm_ev.data.tmr_exp.ts; 
-	cout << "FSM Thread => event arrived = timer_expiry: " << "TS = " << ts << endl;
-return true;
-}
-
-
-//Process FSM Event - Demulitplex based on the fsm_curr_state and event type
-bool process_fsm_event(FSM_EVENT & fsm_ev) {
-	FSM_Event_Types ev_type = fsm_ev.type;	
-	cout << "FSM Thread => dispatching event " << FSM_Event_Type_Name[ev_type] << " to handler function" << endl; 
-	(*FSM_Ev_Handler_Table[fsm_curr_state][ev_type])(fsm_ev);
-
-return true;
-}
