@@ -21,7 +21,18 @@
 #include <string.h>
 #include <fcntl.h>
 
+//includes for Seasocks websocket library
+#include "seasocks/PrintfLogger.h"
+#include "seasocks/Server.h"
+#include "seasocks/StringUtil.h"
+#include "seasocks/WebSocket.h"
+#include "seasocks/util/Json.h"
+#include <cstring>
+#include <memory>
+#include <set>
+
 using namespace std;
+using namespace seasocks;
 
 //Trade Packet (Sent from Worker 1 to Worker 2)
 struct tradepacket {
@@ -30,7 +41,6 @@ struct tradepacket {
 	double qty;
 	uint64_t ts2;
 };
-
 
 //15 Seconds Bar Context
 struct BarCntxt {
@@ -44,7 +54,6 @@ struct BarCntxt {
 	double       bar_close;
 	double       bar_volume;
 };
-
 
 //Bar Types
 enum Bar_Type {  CLOSING_BAR = 0, 
@@ -623,6 +632,71 @@ bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 
 
 
+//Seasocks websockets libray handlers client side service
+
+class MyHandler : public WebSocket::Handler {
+public:
+    explicit MyHandler(Server* server)
+            : _server(server) {
+    }
+
+    void onConnect(WebSocket* connection) override {
+        _connections.insert(connection);
+        std::cout << "Connected: " << connection->getRequestUri()
+                  << " : " << formatAddress(connection->getRemoteAddress())
+                  << "\nCredentials: " << *(connection->credentials()) << "\n";
+    }
+
+    void onData(WebSocket* connection, const char* data) override {
+        if (0 == strcmp("die", data)) {
+            _server->terminate();
+            return;
+        }
+        if (0 == strcmp("close", data)) {
+            std::cout << "Closing..\n";
+            connection->close();
+            std::cout << "Closed.\n";
+            return;
+        }
+
+        string ticker = string(data);
+		string msg    = ticker + " - Is this what you requested ?";
+        connection->send(msg.c_str());
+    }
+
+    void onDisconnect(WebSocket* connection) override {
+        _connections.erase(connection);
+        std::cout << "Disconnected: " << connection->getRequestUri()
+                  << " : " << formatAddress(connection->getRemoteAddress()) << "\n";
+    }
+
+    void publishBar(BarCntxt barcntxt) {
+		for (auto connection : _connections) {
+        	std::cout << "Publishing bar to : " << connection->getRequestUri()
+                  << " : " << formatAddress(connection->getRemoteAddress()) << "\n";
+			stringstream ss;
+			ss << "{\"event\": \"ohlc_notify\", ";
+			ss << "\"symbol\": \"" << barcntxt.sym       << "\", ";
+			ss << "\"bar_num\": "  << barcntxt.bar_num   << ", ";
+			ss << "\"O\": "        << barcntxt.bar_open  << ", ";
+			ss << "\"H\": "        << barcntxt.bar_high  << ", ";
+			ss << "\"L\": "        << barcntxt.bar_low   << ", ";
+			ss << "\"C\": "        << barcntxt.bar_close << ", ";
+			ss << "\"volume\": "   << barcntxt.bar_volume;
+			ss << "}";
+        
+			connection->send(ss.str());
+		}
+    }
+
+private:
+    std::set<WebSocket*> _connections;
+    Server* _server;
+};
+
+
+
+
 //Thread 3: Publisher thread. Receive bars from FSM thread and publish to clients.
 //Maintain client connections and subscriptions
 
@@ -632,6 +706,94 @@ void *publisher_thread_publish_bars(void *msg)
 	fds[0].fd = pfd_w2_w3[0];
 	fds[0].events = POLLIN;
 	BarCntxt barcntxt;
+
+	cout << "Starting Seasocks server" << endl;
+
+	//Seasocks logger
+    auto logger = std::make_shared<PrintfLogger>(Logger::Level::Debug);
+
+    Server server(logger);
+
+    auto handler = std::make_shared<MyHandler>(&server);
+    server.addWebSocketHandler("/", handler);
+    server.startListening(9090);
+	while (1) {
+    	server.poll(100);
+
+		int timeout_msecs = 1 * 100;
+		int ret = poll(fds, 1, timeout_msecs);
+
+		if (ret > 0) {
+			if (fds[0].revents & POLLIN) {
+
+				if ( fcntl( fds[0].fd, F_SETFL, fcntl(fds[0].fd, F_GETFL) | O_NONBLOCK ) < 0 ) {
+					cout << "Pubisher Thread => Error setting nonblocking flag for incoming bars data pipe" << endl;
+					exit(0);
+				}
+
+				int r;
+				while( (r = read(fds[0].fd, &barcntxt, sizeof(barcntxt))) > 0)  {
+
+					string symbol(barcntxt.sym);
+					//update the publishers bar cache
+					auto it = pubs_bar_cache.find(symbol);
+					bool bar_exists = ( it != pubs_bar_cache.end() );
+
+					if (bar_exists == true) {
+						//update existing entry in the publisher cache
+						it->second = barcntxt;
+					} else {
+						//insert new entry in the publisher cache
+						pubs_bar_cache.insert( pair<string, BarCntxt>(symbol, barcntxt) );
+					}
+					
+					//TODO - Check the subscriptions and push the bar to subscribers thru appopriate client connection socket descriptors
+					//cout << "Publisher Thread => Read incoming bar : "
+					//     << "sym = "              << barcntxt.sym 
+					//     << ", bar_num = "        << barcntxt.bar_num
+					//     << ", bar_start_time = " << barcntxt.bar_start_time
+					//     << ", bar_close_time = " << barcntxt.bar_close_time
+					//     << ", bar_open = "       << barcntxt.bar_open
+					//     << ", bar_high = "       << barcntxt.bar_high
+					//     << ", bar_low  = "       << barcntxt.bar_low
+					//     << ", bar_close = "      << barcntxt.bar_close
+					//     << ", bar_volume = "     << barcntxt.bar_volume
+					//     << endl;
+					handler->publishBar(barcntxt);
+				}
+			}
+		}
+		else {
+			cout << "Publisher Thread => Timeout occured while reading bars data. No bars data to read" << endl;
+		}
+	}
+}
+
+
+//BACKUP
+void *publisher_thread_publish_bars2(void *msg)
+{
+	struct pollfd fds[1];
+	fds[0].fd = pfd_w2_w3[0];
+	fds[0].events = POLLIN;
+	BarCntxt barcntxt;
+
+	cout << "Starting Seasocks server" << endl;
+
+	//Seasocks logger
+    auto logger = std::make_shared<PrintfLogger>(Logger::Level::Debug);
+
+    Server server(logger);
+
+    auto handler = std::make_shared<MyHandler>(&server);
+    server.addWebSocketHandler("/", handler);
+    //server.serve("src/Analytical_Server", 9090);
+    server.startListening(9090);
+	while (1) {
+    	server.poll(100);
+	}
+
+	return nullptr;
 
 	while(1) {
 		int timeout_msecs = 2 * 1000;
