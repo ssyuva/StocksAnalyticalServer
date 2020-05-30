@@ -121,6 +121,7 @@ typedef bool (*FSM_EVENT_HANDLER) (FSM_EVENT &);
 //Function prototypes
 void *trade_data_reader(void *msg);
 void *fsm_thread_bar_calc(void *msg);
+void *publisher_thread_publish_bars(void *msg);
 bool fsm_fire_event(FSM_EVENT & fsm_ev);
 bool process_fsm_starting(FSM_EVENT & fsm_ev);
 bool process_fsm_down(FSM_EVENT & fsm_ev);
@@ -139,11 +140,13 @@ FSM_EVENT_HANDLER FSM_Ev_Handler_Table[FSM_STATE_COUNT][EVENT_TYPE_COUNT] = {
 																			};
 
 
-int pfd[2];
+int pfd_w1_w2[2];  
+int pfd_w2_w3[2];
 
 FSM_States fsm_curr_state = FSM_STARTING;
 map<string, BarCntxt> bar_cntxt_cache;
 map<string, BarCntxt> outbound_cache;
+map<string, BarCntxt> pubs_bar_cache;
 
 const uint64_t fifteen_min_nanosecs = 15 * 60 * 1000000000UL ;
 
@@ -152,20 +155,30 @@ int main()
 	const char *tradefile = "trades.json";
 	pthread_t trade_reader;
 	pthread_t fsm_thread;
+	pthread_t publisher_thread;
 
 	//create the pipe for data sharing between worker 1 and worker 2
-	pipe(pfd);
+	pipe(pfd_w1_w2);
+
+	//create the pipe for data sharing between worker 2 and worker 3
+	pipe(pfd_w2_w3);
+
 
 	int retval_1;
 
 	retval_1 = pthread_create(&trade_reader, NULL, trade_data_reader, (void *) tradefile);
 
 	int retval_2;
-	const char *name = "FSM Thread";
-	retval_2 = pthread_create(&fsm_thread, NULL, fsm_thread_bar_calc, (void *) name);
+	const char *fsm = "FSM Thread";
+	retval_2 = pthread_create(&fsm_thread, NULL, fsm_thread_bar_calc, (void *) fsm);
+
+	int retval_3;
+	const char *publisher = "Publisher Thread";
+	retval_3 = pthread_create(&publisher_thread, NULL, publisher_thread_publish_bars, (void *) publisher);
 
 	pthread_join(trade_reader, NULL);
 	pthread_join(fsm_thread, NULL);
+	pthread_join(publisher_thread, NULL);
 
 	return 0;
 }
@@ -230,7 +243,7 @@ void *trade_data_reader(void *msg) {
 		tp.ts2   = ts2;
 
 		//write into the pipe that takes the data to fsm thread
-		write(pfd[1], &tp, sizeof(tp));
+		write(pfd_w1_w2[1], &tp, sizeof(tp));
 	}
 }
 
@@ -283,7 +296,7 @@ vector<string> tokenize(const char *str, char c)
 void *fsm_thread_bar_calc(void *msg)
 {
 	struct pollfd fds[1];
-	fds[0].fd = pfd[0];
+	fds[0].fd = pfd_w1_w2[0];
 	fds[0].events = POLLIN;
 	tradepacket tp;
 
@@ -310,7 +323,7 @@ void *fsm_thread_bar_calc(void *msg)
 					double qty   = tp.qty;
 					uint64_t ts2 = tp.ts2; 
 
-					cout << "FSM Thread => read tradepacket : sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
+					//cout << "FSM Thread => read tradepacket : sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
 					//Create a trade packet arrival event and fire it
 
 					FSM_EVENT fsm_ev;
@@ -361,22 +374,22 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 	uint64_t ts2 = fsm_ev.data.trd_pkt.ts2; 
 	uint64_t expired_timestamp = ts2; 
 
-	cout << "FSM Thread => event arrived = trd_pkt_arrival: sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
+	//cout << "FSM Thread => event arrived = trd_pkt_arrival: sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
 
 	//check if symbol exists in Bar contexts cache
 	string sym(symbol);
 
-	cout << "FSM Thread => Searching bar cache for symbol " << symbol << endl;
+	//cout << "FSM Thread => Searching bar cache for symbol " << symbol << endl;
 
 	auto it = bar_cntxt_cache.find(sym);
 
 	bool cntxt_exists = (it != bar_cntxt_cache.end());
 
-	cout << "FSM Thread => cntxt_exists = " << cntxt_exists << endl;
+	//cout << "FSM Thread => cntxt_exists = " << cntxt_exists << endl;
 
 	if (!cntxt_exists) {
 		//bars context does not exist. create it
-	    cout << "FSM Thread => Bar context does not exist. Creating it : sym = " << symbol << endl;
+	    //cout << "FSM Thread => Bar context does not exist. Creating it : sym = " << symbol << endl;
 		BarCntxt newcntxt;
 		strcpy(newcntxt.sym, symbol);
 		newcntxt.bar_num        = 1;
@@ -396,11 +409,11 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 	}
 	else {
 		//bars context exist, update it
-	    cout << "FSM Thread => Bar context exists. Update it : sym = " << symbol << endl;
+	    //cout << "FSM Thread => Bar context exists. Update it : sym = " << symbol << endl;
 		BarCntxt oldcntxt = it->second;
-	    cout << "FSM Thread => sym = " << symbol << ", Current bar close time = " << oldcntxt.bar_close_time << ", Current TS2 : " << ts2 << endl;
+	    //cout << "FSM Thread => sym = " << symbol << ", Current bar close time = " << oldcntxt.bar_close_time << ", Current TS2 : " << ts2 << endl;
 		if ( ts2 <= oldcntxt.bar_close_time) {
-	    cout << "FSM Thread => sym = " << symbol << ". Trade goes into exising bar" << endl;
+	    //cout << "FSM Thread => sym = " << symbol << ". Trade goes into exising bar" << endl;
 		//TODO - remove debug
 		fsm_emit_bar(oldcntxt, TRADE_BAR);
 
@@ -424,7 +437,7 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 		}
 		else {
 			    //trade goes into next bar or someother future bar
-	    		cout << "FSM Thread => sym = " << symbol << ". Trade goes into next bar or future bar" << endl;
+	    		//cout << "FSM Thread => sym = " << symbol << ". Trade goes into next bar or future bar" << endl;
 				uint64_t curr_bar_close_time = oldcntxt.bar_close_time;
 				do {
 					// keep closing the current bar until the bar that accomodates the current trade opens up
@@ -484,14 +497,14 @@ return true;
 //Process events TIMER_EXPIRY while FSM_State == FSM_READY
 bool process_fsm_ready_ev_tmr_expiry(FSM_EVENT & fsm_ev) {
 	uint64_t expired_ts = fsm_ev.data.tmr_exp.ts; 
-	cout << "FSM Thread => event arrived = timer_expiry: " << "TS = " << expired_ts << endl;
+	//cout << "FSM Thread => event arrived = timer_expiry: " << "TS = " << expired_ts << endl;
 
 	//Iterate the bar cache and close the bars that have expired
 	for( auto it = bar_cntxt_cache.begin() ; it != bar_cntxt_cache.end() ; it++ ) {
 		string   sym       = it->first;
 		BarCntxt barcntxt  = it->second;
 		uint64_t bar_close_time = barcntxt.bar_close_time; 
-		cout << "FSM Thread => processing timer_expiry: " << "symbol = " << sym << ", bar_close_time = " << bar_close_time << ", expired_ts = " << expired_ts << endl;
+		//cout << "FSM Thread => processing timer_expiry: " << "symbol = " << sym << ", bar_close_time = " << bar_close_time << ", expired_ts = " << expired_ts << endl;
 
 	 while (expired_ts > bar_close_time ) {
 
@@ -527,7 +540,7 @@ return true;
 //Process FSM Event - Demulitplex based on the fsm_curr_state and event type
 bool process_fsm_event(FSM_EVENT & fsm_ev) {
 	FSM_Event_Types ev_type = fsm_ev.type;	
-	cout << "FSM Thread => dispatching event " << FSM_Event_Type_Name[ev_type] << " to handler function" << endl; 
+	//cout << "FSM Thread => dispatching event " << FSM_Event_Type_Name[ev_type] << " to handler function" << endl; 
 	(*FSM_Ev_Handler_Table[fsm_curr_state][ev_type])(fsm_ev);
 
 return true;
@@ -554,7 +567,7 @@ bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 	//check if bar exists in outboud cache. emit the bar only in case of new bars / update of existing bars
 	auto it = outbound_cache.find(sym);
 	bool bar_exists = (it != outbound_cache.end());
-	cout << "FSM Thread => bar_exists = " << bar_exists << endl;
+	//cout << "FSM Thread => bar_exists = " << bar_exists << endl;
 
 	if ( bar_exists == true ) {
 		BarCntxt prevctxt = it->second;
@@ -569,9 +582,9 @@ bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 		     bar_close_time == prevctxt.bar_close_time ) {
 			//the bar need not be emitted if the values have not changed
 			emit_bar = false;
-			cout << "FSM Thread => Ignoring bar. No update in existing bar. " << "bartype = " << Bar_Type_Name[bt] 
-                 << ", symbol = " << symbol 
-                 << ", bar_num = " << bar_num << endl;
+			//cout << "FSM Thread => Ignoring bar. No update in existing bar. " << "bartype = " << Bar_Type_Name[bt] 
+            //     << ", symbol = " << symbol 
+            //     << ", bar_num = " << bar_num << endl;
 		}
 	}
 
@@ -583,18 +596,81 @@ bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 			//insert new entry in the outbound cache
 			outbound_cache.insert( pair<string, BarCntxt>(sym, barcntxt) );
 		}
-		cout << "FSM Thread => Emiting Bar : " 
-		             << "bartype = "          << Bar_Type_Name[bt] 
-		             << ", symbol = "         << symbol 
-		             << ", bar_num = "        << bar_num
-		             << ", O = "              << bar_open
-		             << ", H = "              << bar_high
-		             << ", L = "              << bar_low
-		             << ", C = "              << bar_close
-		             << ", volume = "         << bar_volume
-		             << ", bar_start_time = " << bar_start_time
-		             << ", bar_close_time = " << bar_close_time
-		             << endl;
+		//cout << "FSM Thread => Emiting Bar : " 
+		//             << "bartype = "          << Bar_Type_Name[bt] 
+		//             << ", symbol = "         << symbol 
+		//             << ", bar_num = "        << bar_num
+		//             << ", O = "              << bar_open
+		//             << ", H = "              << bar_high
+		//             << ", L = "              << bar_low
+		//             << ", C = "              << bar_close
+		//             << ", volume = "         << bar_volume
+		//             << ", bar_start_time = " << bar_start_time
+		//             << ", bar_close_time = " << bar_close_time
+		//             << endl;
+
+		//write bar context into the pipe that takes the data to publisher thread
+		write(pfd_w2_w3[1], &barcntxt, sizeof(barcntxt));
 	}
 }
 
+
+
+//Thread 3: Publisher thread. Receive bars from FSM thread and publish to clients.
+//Maintain client connections and subscriptions
+
+void *publisher_thread_publish_bars(void *msg)
+{
+	struct pollfd fds[1];
+	fds[0].fd = pfd_w2_w3[0];
+	fds[0].events = POLLIN;
+	BarCntxt barcntxt;
+
+	while(1) {
+		int timeout_msecs = 2 * 1000;
+		int ret = poll(fds, 1, timeout_msecs);
+
+		if (ret > 0) {
+			if (fds[0].revents & POLLIN) {
+
+				if ( fcntl( fds[0].fd, F_SETFL, fcntl(fds[0].fd, F_GETFL) | O_NONBLOCK ) < 0 ) {
+					cout << "Pubisher Thread => Error setting nonblocking flag for incoming bars data pipe" << endl;
+					exit(0);
+				}
+
+				int r;
+				while( (r = read(fds[0].fd, &barcntxt, sizeof(barcntxt))) > 0)  {
+
+					string symbol(barcntxt.sym);
+					//update the publishers bar cache
+					auto it = pubs_bar_cache.find(symbol);
+					bool bar_exists = ( it != pubs_bar_cache.end() );
+
+					if (bar_exists == true) {
+						//update existing entry in the publisher cache
+						it->second = barcntxt;
+					} else {
+						//insert new entry in the publisher cache
+						pubs_bar_cache.insert( pair<string, BarCntxt>(symbol, barcntxt) );
+					}
+					
+					//TODO - Check the subscriptions and push the bar to subscribers thru appopriate client connection socket descriptors
+					cout << "Publisher Thread => Read incoming bar : "
+					     << "sym = "              << barcntxt.sym 
+					     << ", bar_num = "        << barcntxt.bar_num
+					     << ", bar_start_time = " << barcntxt.bar_start_time
+					     << ", bar_close_time = " << barcntxt.bar_close_time
+					     << ", bar_open = "       << barcntxt.bar_open
+					     << ", bar_high = "       << barcntxt.bar_high
+					     << ", bar_low  = "       << barcntxt.bar_low
+					     << ", bar_close = "      << barcntxt.bar_close
+					     << ", bar_volume = "     << barcntxt.bar_volume
+					     << endl;
+				}
+			}
+		}
+		else {
+			cout << "Publisher Thread => Timeout occured while reading bars data. No bars data to read" << endl;
+		}
+	}
+}
