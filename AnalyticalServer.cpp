@@ -141,6 +141,7 @@ int pfd[2];
 
 FSM_States fsm_curr_state = FSM_STARTING;
 map<string, BarCntxt> bar_cntxt_cache;
+map<string, BarCntxt> outbound_cache;
 
 const uint64_t fifteen_min_microsecs = 15 * 60 * 1000 * 10 * 100 ;
 
@@ -543,17 +544,55 @@ bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 	uint64_t bar_start_time  = barcntxt.bar_start_time;
 	uint64_t bar_close_time  = barcntxt.bar_close_time;
 	strcpy(symbol, barcntxt.sym);
-	cout << "FSM Thread => Emiting Bar : " 
-	             << "bartype = "          << Bar_Type_Name[bt] 
-	             << ", symbol = "         << symbol 
-	             << ", bar_num = "        << bar_num
-	             << ", O = "              << bar_open
-	             << ", H = "              << bar_high
-	             << ", L = "              << bar_low
-	             << ", C = "              << bar_close
-	             << ", volume = "         << bar_volume
-	             << ", bar_start_time = " << bar_start_time
-	             << ", bar_close_time = " << bar_close_time
-	             << endl;
+
+	string sym(symbol);
+
+	bool emit_bar = true;
+
+	//check if bar exists in outboud cache. emit the bar only in case of new bars / update of existing bars
+	auto it = outbound_cache.find(sym);
+	bool bar_exists = (it != outbound_cache.end());
+	cout << "FSM Thread => bar_exists = " << bar_exists << endl;
+
+	if ( bar_exists == true ) {
+		BarCntxt prevctxt = it->second;
+	
+		if ( bar_num        == prevctxt.bar_num        and
+		     bar_open       == prevctxt.bar_open       and
+		     bar_high       == prevctxt.bar_high       and
+		     bar_low        == prevctxt.bar_low        and
+		     bar_close      == prevctxt.bar_close      and
+		     bar_volume     == prevctxt.bar_volume     and
+		     bar_start_time == prevctxt.bar_start_time and
+		     bar_close_time == prevctxt.bar_close_time ) {
+			//the bar need not be emitted if the values have not changed
+			emit_bar = false;
+			cout << "FSM Thread => Ignoring bar. No update in existing bar. " << "bartype = " << Bar_Type_Name[bt] 
+                 << ", symbol = " << symbol 
+                 << ", bar_num = " << bar_num << endl;
+		}
+	}
+
+	if (emit_bar == true) {
+		if (bar_exists == true) {
+			//update existing entry in the outbound cache
+			it->second = barcntxt;
+		} else {
+			//insert new entry in the outbound cache
+			outbound_cache.insert( pair<string, BarCntxt>(sym, barcntxt) );
+		}
+		cout << "FSM Thread => Emiting Bar : " 
+		             << "bartype = "          << Bar_Type_Name[bt] 
+		             << ", symbol = "         << symbol 
+		             << ", bar_num = "        << bar_num
+		             << ", O = "              << bar_open
+		             << ", H = "              << bar_high
+		             << ", L = "              << bar_low
+		             << ", C = "              << bar_close
+		             << ", volume = "         << bar_volume
+		             << ", bar_start_time = " << bar_start_time
+		             << ", bar_close_time = " << bar_close_time
+		             << endl;
+	}
 }
 
