@@ -702,7 +702,11 @@ private:
 
 void *publisher_thread_publish_bars(void *msg)
 {
-	struct pollfd fds[1];
+	const  int numfds =2;
+	struct pollfd fds[numfds];
+
+
+	//register pipe for incoming data activity
 	fds[0].fd = pfd_w2_w3[0];
 	fds[0].events = POLLIN;
 	BarCntxt barcntxt;
@@ -717,13 +721,28 @@ void *publisher_thread_publish_bars(void *msg)
     auto handler = std::make_shared<MyHandler>(&server);
     server.addWebSocketHandler("/", handler);
     server.startListening(9090);
+
+	int server_fd = server.fd();
+	cout << "Websocks server fd : " << server_fd << endl;
+
+	//Register server fd for any subscription activity
+	fds[1].fd = server_fd;
+	fds[1].events = POLLIN;
+
 	while (1) {
-    	server.poll(100);
 
 		int timeout_msecs = 1 * 100;
-		int ret = poll(fds, 1, timeout_msecs);
+		int ret = poll(fds, numfds, timeout_msecs);
 
 		if (ret > 0) {
+
+			//first check the websocket server for subscriptions
+			if (fds[1].revents & POLLIN) {
+
+    			server.poll(100);
+			}
+			
+			//subscription cache is update now. process the outgoing bars
 			if (fds[0].revents & POLLIN) {
 
 				if ( fcntl( fds[0].fd, F_SETFL, fcntl(fds[0].fd, F_GETFL) | O_NONBLOCK ) < 0 ) {
