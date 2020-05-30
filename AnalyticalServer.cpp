@@ -415,7 +415,7 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 		if ( ts2 <= oldcntxt.bar_close_time) {
 	    //cout << "FSM Thread => sym = " << symbol << ". Trade goes into exising bar" << endl;
 		//TODO - remove debug
-		fsm_emit_bar(oldcntxt, TRADE_BAR);
+		//fsm_emit_bar(oldcntxt, TRADE_BAR);
 
 			//trade goes into existing bar
 			if (price > oldcntxt.bar_high) {
@@ -433,7 +433,6 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 		//TODO - remove debug
 		//TODO - update subscribers on trade update
 		fsm_emit_bar(oldcntxt, TRADE_BAR);
-
 		}
 		else {
 			    //trade goes into next bar or someother future bar
@@ -523,8 +522,8 @@ bool process_fsm_ready_ev_tmr_expiry(FSM_EVENT & fsm_ev) {
 			//emit closing bar info to worker 3 
 			fsm_emit_bar(barcntxt, TIMER_EXP_CLOSING_BAR);
 
-			//emit opening bar info to worker 3 
-			fsm_emit_bar(newcntxt, TIMER_EXP_OPENING_BAR);
+			//emit opening bar info to worker 3. (do not emit opening bars, emit bars only on closure of bars or trades)
+			//fsm_emit_bar(newcntxt, TIMER_EXP_OPENING_BAR);
 
 			//update the bar cache with current bar info
 			it->second = newcntxt;
@@ -549,6 +548,14 @@ return true;
 
 //Emit bar into to worker 3
 bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
+
+	//closing price is 0.0 for bars that are not closing bars. i.e trade bars / open bars etc
+	//actual closing price is emited only for bar types CLOSING_BAR and TIMER_EXP_CLOSING_BAR
+
+	if (bt == TRADE_BAR or bt == TIMER_EXP_OPENING_BAR) {
+		barcntxt.bar_close = 0.0;
+	}
+
 	char symbol[15];
 	unsigned int bar_num   = barcntxt.bar_num;
 	double bar_open        = barcntxt.bar_open;
