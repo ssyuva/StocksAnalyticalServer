@@ -3,6 +3,8 @@
 
 /*
 	Thread 1: Reads the trade data from the json file
+	Thread 2: FSM that calculates the 15min OHLC bar from trade data
+	Thread 3: Maintains client subscriptions and sends bar info to clients
 */
 
 #include <iostream>
@@ -143,7 +145,7 @@ FSM_States fsm_curr_state = FSM_STARTING;
 map<string, BarCntxt> bar_cntxt_cache;
 map<string, BarCntxt> outbound_cache;
 
-const uint64_t fifteen_min_microsecs = 15 * 60 * 1000 * 10 * 100 ;
+const uint64_t fifteen_min_nanosecs = 15 * 60 * 1000000000UL ;
 
 int main()
 {
@@ -379,7 +381,7 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 		strcpy(newcntxt.sym, symbol);
 		newcntxt.bar_num        = 1;
 		newcntxt.bar_start_time = ts2;
-		newcntxt.bar_close_time = ts2 + fifteen_min_microsecs;
+		newcntxt.bar_close_time = ts2 + fifteen_min_nanosecs;
 		newcntxt.bar_open       = price;
 		newcntxt.bar_high       = price;
 		newcntxt.bar_low        = price;
@@ -430,7 +432,7 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 					strcpy(newcntxt.sym, symbol);
 					newcntxt.bar_num        = oldcntxt.bar_num + 1;
 					newcntxt.bar_start_time = oldcntxt.bar_close_time + 1;
-					newcntxt.bar_close_time = newcntxt.bar_start_time + fifteen_min_microsecs;
+					newcntxt.bar_close_time = newcntxt.bar_start_time + fifteen_min_nanosecs;
 					newcntxt.bar_open       = oldcntxt.bar_close;
 					newcntxt.bar_high       = oldcntxt.bar_close;
 					newcntxt.bar_low        = oldcntxt.bar_close;
@@ -498,7 +500,7 @@ bool process_fsm_ready_ev_tmr_expiry(FSM_EVENT & fsm_ev) {
 			strcpy(newcntxt.sym, barcntxt.sym);
 			newcntxt.bar_num        = barcntxt.bar_num + 1;
 			newcntxt.bar_start_time = barcntxt.bar_close_time + 1;
-			newcntxt.bar_close_time = newcntxt.bar_start_time + fifteen_min_microsecs;
+			newcntxt.bar_close_time = newcntxt.bar_start_time + fifteen_min_nanosecs;
 			newcntxt.bar_open       = barcntxt.bar_close;
 			newcntxt.bar_high       = barcntxt.bar_close;
 			newcntxt.bar_low        = barcntxt.bar_close;
