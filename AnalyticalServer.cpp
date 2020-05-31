@@ -1,11 +1,13 @@
 // Build 15 seconds OHLC Bar chart data from trade data and publish the same thru websockets to clients
 // Author: Yuvaraja Subramaniam ( www.linkedin.com/in/yuvaraja )
 
+
 /*
 	Thread 1: Reads the trade data from the json file
 	Thread 2: FSM that calculates the 15 seconds OHLC bar from trade data
 	Thread 3: WebSockete thread maintains client subscriptions and sends bar info to clients
 */
+
 
 #include <iostream>
 #include <fstream>
@@ -42,6 +44,7 @@
 using namespace std;
 using namespace seasocks;
 
+
 //time to wait before playing trade packets into the system
 const int pre_publish_wait_secs = 60;
 
@@ -53,6 +56,7 @@ struct tradepacket {
 	double qty;
 	uint64_t ts2;
 };
+
 
 //15 Seconds Bar Context
 struct BarCntxt {
@@ -66,6 +70,7 @@ struct BarCntxt {
 	double       bar_close;
 	double       bar_volume;
 };
+
 
 //Bar Types
 enum Bar_Type {  CLOSING_BAR = 0, 
@@ -228,9 +233,13 @@ int main( int argc, char* argv[] )
         exit(0);
     }
 
+
 	//Initialize the g2log logger
 	g2LogWorker g2log(argv[0], "./");
 	g2::initializeLogging(&g2log);
+
+	cout      << ".................ANLALYTICAL SERVER (OHLC 15 SECONDS)...................." << endl;
+	LOG(INFO) << ".................ANLALYTICAL SERVER (OHLC 15 SECONDS)...................." << endl;
 
 	cout      << "Using trades file : " << tradefile << endl;
 	LOG(INFO) << "Using trades file : " << tradefile << endl;
@@ -761,17 +770,25 @@ public:
 
         _connections.insert(connection);
 
-        std::cout << "Connected: " << connection->getRequestUri()
-                  << " : " << formatAddress(connection->getRemoteAddress())
-                  << "\nCredentials: " << *(connection->credentials()) << "\n";
+		stringstream ss;
+
+        ss << "Worker 3 (Publisher Thread) => Connected: " << connection->getRequestUri()
+           << " : " << formatAddress(connection->getRemoteAddress())
+           << "\nCredentials: " << *(connection->credentials()) << "\n";
+
+		LOG(INFO) << ss.str();
+		cout      << ss.str();
 
         _connections.insert(connection);
 		//initialize subscriptions for the connection
 		std::set<string> emptyset;
 		_client_subscriptions.insert( pair< WebSocket*, std::set<string> >(connection, emptyset) );
 
-        std::cout << "Created empty subscription list for : " << connection->getRequestUri()
-                  << " : " << formatAddress(connection->getRemoteAddress()) << endl;
+		ss.clear();
+        ss << "Worker 3 (Publisher Thread) => Created empty subscription list for : " << formatAddress(connection->getRemoteAddress()) << endl;
+
+		LOG(INFO) << ss.str();
+		cout      << ss.str();
     }
 
     void onData(WebSocket* connection, const char* data) override {
@@ -780,8 +797,13 @@ public:
             return;
         }
         if (0 == strcmp("close", data)) {
+
             std::cout << "Closing..\n";
+            LOG(INFO) << "Closing..\n";
+
             connection->close();
+
+            LOG(INFO) << "Closed.\n";
             std::cout << "Closed.\n";
             return;
         }
@@ -809,9 +831,13 @@ public:
 			interval = it->second;
 		}
 
-		cout << "event = " << event
-		     << "symbol = " << ticker
-		     << "interval = " << interval << endl;
+		stringstream ss;
+		ss   << "Worker 3 (Publisher Thread) => event = " << event
+		     << ", symbol = " << ticker
+		     << ", interval = " << interval << endl;
+
+		cout      << ss.str();
+		LOG(INFO) << ss.str();
 
 		if (event == "subscribe") {
 			auto it = _client_subscriptions.find(connection);
@@ -833,19 +859,30 @@ public:
 				}
 		}
 		
-		msg = "your current subscriptions : " + msg;
+		msg = "Hello client! your current subscriptions : " + msg;
         connection->send(msg.c_str());
     }
 
     void onDisconnect(WebSocket* connection) override {
 
         _connections.erase(connection);
-        std::cout << "Disconnected: " << connection->getRequestUri()
-                  << " : " << formatAddress(connection->getRemoteAddress()) << "\n";
+
+		stringstream ss;
+
+        ss << "Worker 3 (Publisher Thread) => Disconnected: " << formatAddress(connection->getRemoteAddress()) << "\n";
+
+		cout      << ss.str();
+		LOG(INFO) << ss.str();
 
 		_client_subscriptions.erase(connection);
-        std::cout << "Erased subscriptions for: " << connection->getRequestUri()
-                  << " : " << formatAddress(connection->getRemoteAddress()) << "\n";
+		
+		ss.clear();
+
+        ss << "Worker 3 (Publisher Thread) => Erased subscriptions for: " << formatAddress(connection->getRemoteAddress()) << "\n";
+
+		cout      << ss.str();
+		LOG(INFO) << ss.str();
+
     }
 
     void publishBar(BarCntxt barcntxt) {
@@ -853,6 +890,7 @@ public:
 		string ticker(barcntxt.sym);
 
 		stringstream ss;
+
 		ss << "{\"event\": \"ohlc_notify\", ";
 		ss << "\"symbol\": \"" << barcntxt.sym       << "\", ";
 		ss << "\"bar_num\": "  << barcntxt.bar_num   << ", ";
@@ -871,10 +909,15 @@ public:
 				auto subset = it->second;
 
 				if (subset.find(ticker) != subset.end()) {
-        			std::cout << "Publishing bar : " << connection->getRequestUri()
-                  	          << " : " << formatAddress(connection->getRemoteAddress()) 
+
+					stringstream ss2;
+        			ss2       << "Worker 3 (Publisher Thread) => Sending bar to client : " << formatAddress(connection->getRemoteAddress()) 
+                  	          << " : " << ss.str()
 					          << "\n";
-					
+
+					cout      << ss2.str();
+					LOG(INFO) << ss2.str();
+
 					connection->send(ss.str());
 				}
 			}
@@ -904,8 +947,8 @@ void *publisher_thread_publish_bars(void *msg)
 	fds[0].events = POLLIN;
 	BarCntxt barcntxt;
 
-	LOG(INFO)  << "Starting Seasocks server" << endl;
-	cout       << "Starting Seasocks server" << endl;
+	LOG(INFO)  << "Worker 3 (Publisher Thread) => Starting Seasocks server" << endl;
+	cout       << "Worker 3 (Publisher Thread) => Starting Seasocks server" << endl;
 
 	//Seasocks logger
     auto logger = std::make_shared<PrintfLogger>(Logger::Level::Debug);
@@ -917,8 +960,8 @@ void *publisher_thread_publish_bars(void *msg)
     server.startListening(9090);
 
 	int server_fd = server.fd();
-	LOG(INFO)  << "Websocks server fd : " << server_fd << endl;
-	cout       << "Websocks server fd : " << server_fd << endl;
+	LOG(INFO)  << "Worker 3 (Publisher Thread) => Websocks server fd : " << server_fd << endl;
+	cout       << "Worker 3 (Publisher Thread) => Websocks server fd : " << server_fd << endl;
 
 	//Register server fd for any subscription activity
 	fds[1].fd = server_fd;
@@ -941,7 +984,7 @@ void *publisher_thread_publish_bars(void *msg)
 			if (fds[0].revents & POLLIN) {
 
 				if ( fcntl( fds[0].fd, F_SETFL, fcntl(fds[0].fd, F_GETFL) | O_NONBLOCK ) < 0 ) {
-					LOG(INFO)  << "Pubisher Thread => Error setting nonblocking flag for incoming bars data pipe" << endl;
+					LOG(INFO)  << "Worker 3 (Pubisher Thread) => Error setting nonblocking flag for incoming bars data pipe" << endl;
 					exit(0);
 				}
 
@@ -978,8 +1021,8 @@ void *publisher_thread_publish_bars(void *msg)
 			}
 		}
 		else {
-			LOG(INFO)  << "Publisher Thread => Timeout occured while reading bars data. No bars data to read" << endl;
-			cout       << "Publisher Thread => Timeout occured while reading bars data. No bars data to read" << endl;
+			LOG(INFO)  << "Worker 3 (Publisher Thread) => Timeout occured while reading bars data. No bars data to read" << endl;
+			cout       << "Worker 3 (Publisher Thread) => Timeout occured while reading bars data. No bars data to read" << endl;
 		}
 	}
 }
