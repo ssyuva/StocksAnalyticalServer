@@ -11,6 +11,7 @@ cd build
 cmake ..
 make
 
+cd ../..
 echo "Installing seasocks..done"
 
 
@@ -24,4 +25,5 @@ mkdir build
 cd build 
 cmake ..
 make
+cd ../../..
 echo "Installing g2lib..done"
