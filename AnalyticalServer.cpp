@@ -140,7 +140,9 @@ bool process_fsm_event(FSM_EVENT & fsm_ev);
 bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt);
 
 vector<string> tokenize(const char *str, char c);
+
 bool parse_trade(string line, map<string, string> & trdmap);
+bool parse_subscription (string line, map<string, string> & subscmap);
 
 FSM_EVENT_HANDLER FSM_Ev_Handler_Table[FSM_STATE_COUNT][EVENT_TYPE_COUNT] = {
 																				process_fsm_starting, process_fsm_starting,
@@ -279,6 +281,34 @@ bool parse_trade(string line, map<string, string> & trdmap) {
 	return true;
 }
 
+
+
+//Parse subscription data into a map of values
+bool parse_subscription (string line, map<string, string> & subscmap) {
+
+	string delchars = "{} \"";
+	for (char c: delchars) {
+		line.erase( remove(line.begin(), line.end(), c), line.end());
+	}
+
+	char item_delimiter = ',';
+	char key_delimiter  = ':';
+	vector<string> items;
+	items = tokenize(line.c_str(), item_delimiter);
+
+	for (string item : items) {
+		//cout << "item : " << item << endl;
+
+		vector<string> keyval = tokenize(item.c_str(), key_delimiter);
+		string ky  = keyval[0];
+		string val = keyval[1];
+		//cout << "key = " << ky << ", val = " << val << endl;
+		//add to the parsemap
+		subscmap.insert(pair<string, string>(ky, val));
+	}
+
+	return true;
+}
 
 
 //Tokenizing function
@@ -627,6 +657,7 @@ bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 
 		//write bar context into the pipe that takes the data to publisher thread
 		write(pfd_w2_w3[1], &barcntxt, sizeof(barcntxt));
+		sleep(1);
 	}
 }
 
@@ -645,6 +676,14 @@ public:
         std::cout << "Connected: " << connection->getRequestUri()
                   << " : " << formatAddress(connection->getRemoteAddress())
                   << "\nCredentials: " << *(connection->credentials()) << "\n";
+
+        _connections.insert(connection);
+		//initialize subscriptions for the connection
+		std::set<string> emptyset;
+		_client_subscriptions.insert( pair< WebSocket*, std::set<string> >(connection, emptyset) );
+
+        std::cout << "Created empty subscription list for : " << connection->getRequestUri()
+                  << " : " << formatAddress(connection->getRemoteAddress()) << endl;
     }
 
     void onData(WebSocket* connection, const char* data) override {
@@ -659,8 +698,54 @@ public:
             return;
         }
 
-        string ticker = string(data);
-		string msg    = ticker + " - Is this what you requested ?";
+        string indata = string(data);
+
+		//insert the subscription into subscription list
+		std::map<string, string> submsg;
+
+		parse_subscription(indata, submsg);
+		string event;
+		string ticker;
+		string interval;
+	
+		auto it = submsg.find("event");
+		if ( it != submsg.end() ) {
+			event = it->second;
+		}
+
+		if ( (it = submsg.find("symbol")) != submsg.end() ) {
+			ticker = it->second;
+		}
+
+		if ( (it = submsg.find("interval")) != submsg.end() ) {
+			interval = it->second;
+		}
+
+		cout << "event = " << event
+		     << "symbol = " << ticker
+		     << "interval = " << interval << endl;
+
+		if (event == "subscribe") {
+			auto it = _client_subscriptions.find(connection);
+			if ( it != _client_subscriptions.end()) {
+				auto subset = it->second;
+				subset.insert(ticker);
+				it->second = subset;
+			}
+		}
+
+		string msg    = "";
+		//send back the subscribied tickers to client
+		auto itc = _client_subscriptions.find(connection);
+
+		if ( itc != _client_subscriptions.end()) {
+				auto subset = itc->second;
+				for (auto subticker : subset) {
+					msg = msg + subticker + " ";
+				}
+		}
+		
+		msg = "your current subscriptions : " + msg;
         connection->send(msg.c_str());
     }
 
@@ -671,27 +756,41 @@ public:
     }
 
     void publishBar(BarCntxt barcntxt) {
+
+		string ticker(barcntxt.sym);
+
+		stringstream ss;
+		ss << "{\"event\": \"ohlc_notify\", ";
+		ss << "\"symbol\": \"" << barcntxt.sym       << "\", ";
+		ss << "\"bar_num\": "  << barcntxt.bar_num   << ", ";
+		ss << "\"O\": "        << barcntxt.bar_open  << ", ";
+		ss << "\"H\": "        << barcntxt.bar_high  << ", ";
+		ss << "\"L\": "        << barcntxt.bar_low   << ", ";
+		ss << "\"C\": "        << barcntxt.bar_close << ", ";
+		ss << "\"volume\": "   << barcntxt.bar_volume;
+		ss << "}";
+
 		for (auto connection : _connections) {
-        	std::cout << "Publishing bar to : " << connection->getRequestUri()
-                  << " : " << formatAddress(connection->getRemoteAddress()) << "\n";
-			stringstream ss;
-			ss << "{\"event\": \"ohlc_notify\", ";
-			ss << "\"symbol\": \"" << barcntxt.sym       << "\", ";
-			ss << "\"bar_num\": "  << barcntxt.bar_num   << ", ";
-			ss << "\"O\": "        << barcntxt.bar_open  << ", ";
-			ss << "\"H\": "        << barcntxt.bar_high  << ", ";
-			ss << "\"L\": "        << barcntxt.bar_low   << ", ";
-			ss << "\"C\": "        << barcntxt.bar_close << ", ";
-			ss << "\"volume\": "   << barcntxt.bar_volume;
-			ss << "}";
-        
-			connection->send(ss.str());
+
+			auto it = _client_subscriptions.find(connection);
+
+			if ( it != _client_subscriptions.end()) {
+				auto subset = it->second;
+
+				if (subset.find(ticker) != subset.end()) {
+        			std::cout << "Publishing bar to : " << connection->getRequestUri()
+                  	          << " : " << formatAddress(connection->getRemoteAddress()) << "\n";
+					
+					connection->send(ss.str());
+				}
+			}
 		}
     }
 
 private:
     std::set<WebSocket*> _connections;
     Server* _server;
+	std::map<WebSocket*, std::set<string> > _client_subscriptions;
 };
 
 
