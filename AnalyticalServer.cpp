@@ -4,7 +4,7 @@
 /*
 	Thread 1: Reads the trade data from the json file
 	Thread 2: FSM that calculates the 15 seconds OHLC bar from trade data
-	Thread 3: Maintains client subscriptions and sends bar info to clients
+	Thread 3: WebSockete thread maintains client subscriptions and sends bar info to clients
 */
 
 #include <iostream>
@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <pthread.h>
 #include <poll.h>
+#include <stdio.h>
 #include <unistd.h>
 #include <string.h>
 #include <fcntl.h>
@@ -31,8 +32,13 @@
 #include <memory>
 #include <set>
 
+
 using namespace std;
 using namespace seasocks;
+
+//time to wait before playing trade packets into the system
+const int pre_publish_wait_secs = 60;
+
 
 //Trade Packet (Sent from Worker 1 to Worker 2)
 struct tradepacket {
@@ -128,42 +134,97 @@ typedef bool (*FSM_EVENT_HANDLER) (FSM_EVENT &);
 
 
 //Function prototypes
+void usage(int argc, char* argv[]);
+
 void *trade_data_reader(void *msg);
+
 void *fsm_thread_bar_calc(void *msg);
+
 void *publisher_thread_publish_bars(void *msg);
+
 bool fsm_fire_event(FSM_EVENT & fsm_ev);
+
 bool process_fsm_starting(FSM_EVENT & fsm_ev);
+
 bool process_fsm_down(FSM_EVENT & fsm_ev);
+
 bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev);
+
 bool process_fsm_ready_ev_tmr_expiry(FSM_EVENT & fsm_ev);
+
 bool process_fsm_event(FSM_EVENT & fsm_ev);
+
 bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt);
 
 vector<string> tokenize(const char *str, char c);
 
 bool parse_trade(string line, map<string, string> & trdmap);
+
 bool parse_subscription (string line, map<string, string> & subscmap);
 
+
+
+//FSM Handler Table
 FSM_EVENT_HANDLER FSM_Ev_Handler_Table[FSM_STATE_COUNT][EVENT_TYPE_COUNT] = {
 																				process_fsm_starting, process_fsm_starting,
 																				process_fsm_ready_ev_trd_pkt_arrival, process_fsm_ready_ev_tmr_expiry,
 																				process_fsm_down, process_fsm_down	
 																			};
 
-
+// Pipes for IPC between threads
 int pfd_w1_w2[2];  
 int pfd_w2_w3[2];
 
+//FSM State
 FSM_States fsm_curr_state = FSM_STARTING;
+
+//Caches
 map<string, BarCntxt> bar_cntxt_cache;
 map<string, BarCntxt> outbound_cache;
 map<string, BarCntxt> pubs_bar_cache;
 
+//time interval between bars in nanoseconds. 
 const uint64_t fifteen_sec_nanosecs = 15 * 1000000000UL ;
 
-int main()
+
+
+
+//MAIN PROGRAM
+int main( int argc, char* argv[] )
 {
-	const char *tradefile = "trades.json";
+
+    bool help  = false;
+    bool debug = false;
+
+	char tradefile[25];
+	strcpy(tradefile, "trades.json");
+
+	int c;
+
+    while ( (c = getopt(argc, argv, "f:dh")) != -1) {
+        switch(c)
+        {
+            case 'f' :
+                strcpy(tradefile, optarg) ;
+                break;
+            case 'd' :
+                debug = true;
+                break;
+            case 'h' :
+                help = true;
+                break;
+        }
+    }
+
+	//if help requested, display and exit
+    if (help) {
+        usage(argc, argv);
+        exit(0);
+    }
+
+
+	cout << "Using trades file : " << tradefile << endl;
+
 	pthread_t trade_reader;
 	pthread_t fsm_thread;
 	pthread_t publisher_thread;
@@ -196,6 +257,15 @@ int main()
 
 
 
+//Usage
+void usage(int argc, char* argv[]) {
+    cout << argv[0] << " -f <filename> -dh" << endl;
+    cout << "       f - trade filename" << endl;
+    cout << "       d - print debug" << endl;
+    cout << "       h - help" << endl;
+}
+
+
 
 //Thread 1: Read the trade data, format trade packets and deliver to FSM
 void *trade_data_reader(void *msg) {
@@ -204,6 +274,13 @@ void *trade_data_reader(void *msg) {
 
 	//open the file
 	ifstream trdfile(fname);
+
+	cout << "Will wait for " << pre_publish_wait_secs << " seconds for you to establish the client subscriptions" << endl;
+
+	for ( int i = 0; i <= pre_publish_wait_secs; i++ ) {
+		cout << "..";
+		sleep(1);
+	}
 
 	string line;
 	while(getline(trdfile, line)) {
@@ -257,6 +334,7 @@ void *trade_data_reader(void *msg) {
 		write(pfd_w1_w2[1], &tp, sizeof(tp));
 	}
 }
+
 
 
 //Parse trade data into a map of values
@@ -343,7 +421,7 @@ void *fsm_thread_bar_calc(void *msg)
 	fsm_curr_state = FSM_READY;
 
 	while(1) {
-		int timeout_msecs = 2 * 1000;
+		int timeout_msecs = 60 * 1000;
 		int ret = poll(fds, 1, timeout_msecs);
 
 		if (ret > 0) {
@@ -380,6 +458,7 @@ void *fsm_thread_bar_calc(void *msg)
 		}
 	}
 }
+
 
 
 //Fire FSM Event
@@ -585,6 +664,7 @@ return true;
 }
 
 
+
 //Emit bar into to worker 3
 bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 
@@ -657,9 +737,9 @@ bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 
 		//write bar context into the pipe that takes the data to publisher thread
 		write(pfd_w2_w3[1], &barcntxt, sizeof(barcntxt));
-		sleep(1);
 	}
 }
+
 
 
 
@@ -750,8 +830,13 @@ public:
     }
 
     void onDisconnect(WebSocket* connection) override {
+
         _connections.erase(connection);
         std::cout << "Disconnected: " << connection->getRequestUri()
+                  << " : " << formatAddress(connection->getRemoteAddress()) << "\n";
+
+		_client_subscriptions.erase(connection);
+        std::cout << "Erased subscriptions for: " << connection->getRequestUri()
                   << " : " << formatAddress(connection->getRemoteAddress()) << "\n";
     }
 
@@ -796,8 +881,8 @@ private:
 
 
 
-//Thread 3: Publisher thread. Receive bars from FSM thread and publish to clients.
-//Maintain client connections and subscriptions
+//Thread 3: Websocket Publisher thread. Receive bars from FSM thread and publish to clients.
+//Maintains websocket client connections and subscriptions
 
 void *publisher_thread_publish_bars(void *msg)
 {
@@ -830,7 +915,7 @@ void *publisher_thread_publish_bars(void *msg)
 
 	while (1) {
 
-		int timeout_msecs = 1 * 100;
+		int timeout_msecs =  60 * 1000;
 		int ret = poll(fds, numfds, timeout_msecs);
 
 		if (ret > 0) {
@@ -887,77 +972,3 @@ void *publisher_thread_publish_bars(void *msg)
 	}
 }
 
-
-//BACKUP
-void *publisher_thread_publish_bars2(void *msg)
-{
-	struct pollfd fds[1];
-	fds[0].fd = pfd_w2_w3[0];
-	fds[0].events = POLLIN;
-	BarCntxt barcntxt;
-
-	cout << "Starting Seasocks server" << endl;
-
-	//Seasocks logger
-    auto logger = std::make_shared<PrintfLogger>(Logger::Level::Debug);
-
-    Server server(logger);
-
-    auto handler = std::make_shared<MyHandler>(&server);
-    server.addWebSocketHandler("/", handler);
-    //server.serve("src/Analytical_Server", 9090);
-    server.startListening(9090);
-	while (1) {
-    	server.poll(100);
-	}
-
-	return nullptr;
-
-	while(1) {
-		int timeout_msecs = 2 * 1000;
-		int ret = poll(fds, 1, timeout_msecs);
-
-		if (ret > 0) {
-			if (fds[0].revents & POLLIN) {
-
-				if ( fcntl( fds[0].fd, F_SETFL, fcntl(fds[0].fd, F_GETFL) | O_NONBLOCK ) < 0 ) {
-					cout << "Pubisher Thread => Error setting nonblocking flag for incoming bars data pipe" << endl;
-					exit(0);
-				}
-
-				int r;
-				while( (r = read(fds[0].fd, &barcntxt, sizeof(barcntxt))) > 0)  {
-
-					string symbol(barcntxt.sym);
-					//update the publishers bar cache
-					auto it = pubs_bar_cache.find(symbol);
-					bool bar_exists = ( it != pubs_bar_cache.end() );
-
-					if (bar_exists == true) {
-						//update existing entry in the publisher cache
-						it->second = barcntxt;
-					} else {
-						//insert new entry in the publisher cache
-						pubs_bar_cache.insert( pair<string, BarCntxt>(symbol, barcntxt) );
-					}
-					
-					//TODO - Check the subscriptions and push the bar to subscribers thru appopriate client connection socket descriptors
-					cout << "Publisher Thread => Read incoming bar : "
-					     << "sym = "              << barcntxt.sym 
-					     << ", bar_num = "        << barcntxt.bar_num
-					     << ", bar_start_time = " << barcntxt.bar_start_time
-					     << ", bar_close_time = " << barcntxt.bar_close_time
-					     << ", bar_open = "       << barcntxt.bar_open
-					     << ", bar_high = "       << barcntxt.bar_high
-					     << ", bar_low  = "       << barcntxt.bar_low
-					     << ", bar_close = "      << barcntxt.bar_close
-					     << ", bar_volume = "     << barcntxt.bar_volume
-					     << endl;
-				}
-			}
-		}
-		else {
-			cout << "Publisher Thread => Timeout occured while reading bars data. No bars data to read" << endl;
-		}
-	}
-}
