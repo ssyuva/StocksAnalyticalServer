@@ -32,6 +32,12 @@
 #include <memory>
 #include <set>
 
+//includes for g2log asynchronous logger
+#include "g2logworker.h"
+#include "g2log.h"
+#include <iomanip>
+#include <thread>
+
 
 using namespace std;
 using namespace seasocks;
@@ -222,8 +228,12 @@ int main( int argc, char* argv[] )
         exit(0);
     }
 
+	//Initialize the g2log logger
+	g2LogWorker g2log(argv[0], "./");
+	g2::initializeLogging(&g2log);
 
-	cout << "Using trades file : " << tradefile << endl;
+	cout      << "Using trades file : " << tradefile << endl;
+	LOG(INFO) << "Using trades file : " << tradefile << endl;
 
 	pthread_t trade_reader;
 	pthread_t fsm_thread;
@@ -272,10 +282,11 @@ void *trade_data_reader(void *msg) {
 
 	char *fname = static_cast<char*>(msg);
 
-	//open the file
+	//open the trades file
 	ifstream trdfile(fname);
 
-	cout << "Will wait for " << pre_publish_wait_secs << " seconds for you to establish the client subscriptions" << endl;
+	cout      << "Will wait for " << pre_publish_wait_secs << " seconds for you to establish the client subscriptions" << endl;
+	LOG(INFO) << "Will wait for " << pre_publish_wait_secs << " seconds for you to establish the client subscriptions" << endl;
 
 	for ( int i = 0; i <= pre_publish_wait_secs; i++ ) {
 		cout << "..";
@@ -284,12 +295,12 @@ void *trade_data_reader(void *msg) {
 
 	string line;
 	while(getline(trdfile, line)) {
-		//cout << "Read line: " << line << endl;
+		LOG(INFO) << "Read line: " << line << endl;
 		string delchars = "{} \"";
 		for (char c: delchars) {
 			line.erase( remove(line.begin(), line.end(), c), line.end());
 		}
-		//cout << "Trade Reader Thread => Stripped line: " << line << endl;
+		LOG(INFO)  << "Worker 1 (Trade Reader) => read line: " << line << endl;
 
 		map<string, string> trademap;
 		parse_trade(line, trademap);
@@ -303,7 +314,6 @@ void *trade_data_reader(void *msg) {
 			string key = itr->first;
 			string val = itr->second;
 
-			//cout << "map key = " << key << ", map value = " << val << endl;
 			if (key == "sym") {
 				symbol = val;
 			}
@@ -321,7 +331,7 @@ void *trade_data_reader(void *msg) {
 			}
 		}
 		
-		//cout << "Trade Reader Thread => Parsed Trade: " << "sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
+		LOG(INFO)  << "Worker 1( Trade Reader) => parsed trade: " << "sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
 
 		//Create trade packet and deliver
 		tradepacket tp;
@@ -337,6 +347,7 @@ void *trade_data_reader(void *msg) {
 
 
 
+
 //Parse trade data into a map of values
 bool parse_trade(string line, map<string, string> & trdmap) {
 
@@ -346,16 +357,13 @@ bool parse_trade(string line, map<string, string> & trdmap) {
 	items = tokenize(line.c_str(), item_delimiter);
 
 	for (string item : items) {
-		//cout << "item : " << item << endl;
 
 		vector<string> keyval = tokenize(item.c_str(), key_delimiter);
 		string ky  = keyval[0];
 		string val = keyval[1];
-		//cout << "key = " << ky << ", val = " << val << endl;
 		//add to the parsemap
 		trdmap.insert(pair<string, string>(ky, val));
 	}
-
 	return true;
 }
 
@@ -375,18 +383,16 @@ bool parse_subscription (string line, map<string, string> & subscmap) {
 	items = tokenize(line.c_str(), item_delimiter);
 
 	for (string item : items) {
-		//cout << "item : " << item << endl;
 
 		vector<string> keyval = tokenize(item.c_str(), key_delimiter);
 		string ky  = keyval[0];
 		string val = keyval[1];
-		//cout << "key = " << ky << ", val = " << val << endl;
-		//add to the parsemap
+		//add to the subscribers map
 		subscmap.insert(pair<string, string>(ky, val));
 	}
-
 	return true;
 }
+
 
 
 //Tokenizing function
@@ -409,6 +415,7 @@ vector<string> tokenize(const char *str, char c)
 
 
 
+
 //Thread 2: FSM thread. Reads trade packets from Worker 1 and calculates bar OHLC values
 void *fsm_thread_bar_calc(void *msg)
 {
@@ -428,7 +435,8 @@ void *fsm_thread_bar_calc(void *msg)
 			if (fds[0].revents & POLLIN) {
 
 				if ( fcntl( fds[0].fd, F_SETFL, fcntl(fds[0].fd, F_GETFL) | O_NONBLOCK ) < 0 ) {
-					cout << "FSM Thread => Error setting nonblocking flag for incoming data pipe" << endl;
+					LOG(INFO)  << "Worker 2 (FSM Thread) => Error setting nonblocking flag for incoming data pipe" << endl;
+					cout        << "Worker 2 (FSM Thread) => Error setting nonblocking flag for incoming data pipe" << endl;
 					exit(0);
 				}
 
@@ -440,7 +448,7 @@ void *fsm_thread_bar_calc(void *msg)
 					double qty   = tp.qty;
 					uint64_t ts2 = tp.ts2; 
 
-					//cout << "FSM Thread => read tradepacket : sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
+					LOG(INFO)  << "FSM Thread => read tradepacket : sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
 					//Create a trade packet arrival event and fire it
 
 					FSM_EVENT fsm_ev;
@@ -454,7 +462,8 @@ void *fsm_thread_bar_calc(void *msg)
 			}
 		}
 		else {
-			cout << "FSM Thread => Timeout occured while reading trade data. No trade data to read from source pipe fd" << endl;
+			LOG(INFO)  << "Worker 2 (FSM Thread) => Timeout occured while reading trade data. No trade data to read from source pipe fd" << endl;
+			cout       << "Worker 2 (FSM Thread) => Timeout occured while reading trade data. No trade data to read from source pipe fd" << endl;
 		}
 	}
 }
@@ -470,14 +479,14 @@ return true;
 //Process events while FSM_State == FSM_STARTING. Ignore all events received at this stage
 bool process_fsm_starting(FSM_EVENT & fsm_ev) {
 
-	cout << "FSM Thread => event arrived. Ignoring as state = " << FSM_State_Name[fsm_curr_state] << endl;
+	LOG(INFO)  << "Worker 2(FSM Thread) => event arrived. Ignoring as state = " << FSM_State_Name[fsm_curr_state] << endl;
 return true;
 }
 
 //Process events while FSM_State == FSM_DOWN. Ignore all events received at this stage
 bool process_fsm_down(FSM_EVENT & fsm_ev) {
 
-	cout << "FSM Thread => event arrived. Ignoring as state = " << FSM_State_Name[fsm_curr_state] << endl;
+	LOG(INFO)  << "Worker 2(FSM Thread) => event arrived. Ignoring as state = " << FSM_State_Name[fsm_curr_state] << endl;
 return true;
 }
 
@@ -492,22 +501,20 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 	uint64_t ts2 = fsm_ev.data.trd_pkt.ts2; 
 	uint64_t expired_timestamp = ts2; 
 
-	//cout << "FSM Thread => event arrived = trd_pkt_arrival: sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
+	LOG(INFO)  << "Worker 2 (FSM Thread) => event arrived = trd_pkt_arrival: sym = " << symbol << ", P = " << price << ", Q = " << qty << ", TS2 = " << ts2 << endl;
 
 	//check if symbol exists in Bar contexts cache
 	string sym(symbol);
 
-	//cout << "FSM Thread => Searching bar cache for symbol " << symbol << endl;
+	LOG(INFO)  << "Worker 2 (FSM Thread) => Searching bar cache for symbol " << symbol << endl;
 
 	auto it = bar_cntxt_cache.find(sym);
 
 	bool cntxt_exists = (it != bar_cntxt_cache.end());
 
-	//cout << "FSM Thread => cntxt_exists = " << cntxt_exists << endl;
-
 	if (!cntxt_exists) {
 		//bars context does not exist. create it
-	    //cout << "FSM Thread => Bar context does not exist. Creating it : sym = " << symbol << endl;
+	    LOG(INFO)  << "Worker 2 (FSM Thread) => Bar context does not exist. Creating it : sym = " << symbol << endl;
 		BarCntxt newcntxt;
 		strcpy(newcntxt.sym, symbol);
 		newcntxt.bar_num        = 1;
@@ -527,13 +534,14 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 	}
 	else {
 		//bars context exist, update it
-	    //cout << "FSM Thread => Bar context exists. Update it : sym = " << symbol << endl;
+	    LOG(INFO)  << "Worker 2 (FSM Thread) => Bar context exists. Update it : sym = " << symbol << endl;
+
 		BarCntxt oldcntxt = it->second;
-	    //cout << "FSM Thread => sym = " << symbol << ", Current bar close time = " << oldcntxt.bar_close_time << ", Current TS2 : " << ts2 << endl;
+
+	    LOG(INFO)  << "Worker 2 (FSM Thread) => sym = " << symbol << ", Current bar close time = " << oldcntxt.bar_close_time << ", Current TS2 : " << ts2 << endl;
+
 		if ( ts2 <= oldcntxt.bar_close_time) {
-	    //cout << "FSM Thread => sym = " << symbol << ". Trade goes into exising bar" << endl;
-		//TODO - remove debug
-		//fsm_emit_bar(oldcntxt, TRADE_BAR);
+	    LOG(INFO)  << "Worker 2 (FSM Thread) => sym = " << symbol << ". Trade goes into exising bar" << endl;
 
 			//trade goes into existing bar
 			if (price > oldcntxt.bar_high) {
@@ -548,13 +556,12 @@ bool process_fsm_ready_ev_trd_pkt_arrival(FSM_EVENT & fsm_ev) {
 			oldcntxt.bar_volume  += qty;
 			it->second = oldcntxt;
 		
-		//TODO - remove debug
 		//TODO - update subscribers on trade update
 		fsm_emit_bar(oldcntxt, TRADE_BAR);
 		}
 		else {
 			    //trade goes into next bar or someother future bar
-	    		//cout << "FSM Thread => sym = " << symbol << ". Trade goes into next bar or future bar" << endl;
+	    		LOG(INFO)  << "Worker 2 (FSM Thread) => sym = " << symbol << ". Trade goes into next bar or future bar" << endl;
 				uint64_t curr_bar_close_time = oldcntxt.bar_close_time;
 				do {
 					// keep closing the current bar until the bar that accomodates the current trade opens up
@@ -614,14 +621,14 @@ return true;
 //Process events TIMER_EXPIRY while FSM_State == FSM_READY
 bool process_fsm_ready_ev_tmr_expiry(FSM_EVENT & fsm_ev) {
 	uint64_t expired_ts = fsm_ev.data.tmr_exp.ts; 
-	//cout << "FSM Thread => event arrived = timer_expiry: " << "TS = " << expired_ts << endl;
+	LOG(INFO)  << "Worker 2 (FSM Thread) => event arrived = timer_expiry: " << "TS = " << expired_ts << endl;
 
 	//Iterate the bar cache and close the bars that have expired
 	for( auto it = bar_cntxt_cache.begin() ; it != bar_cntxt_cache.end() ; it++ ) {
 		string   sym       = it->first;
 		BarCntxt barcntxt  = it->second;
 		uint64_t bar_close_time = barcntxt.bar_close_time; 
-		//cout << "FSM Thread => processing timer_expiry: " << "symbol = " << sym << ", bar_close_time = " << bar_close_time << ", expired_ts = " << expired_ts << endl;
+		LOG(INFO)  << "Worker 2 (FSM Thread) => processing timer_expiry: " << "symbol = " << sym << ", bar_close_time = " << bar_close_time << ", expired_ts = " << expired_ts << endl;
 
 	 while (expired_ts > bar_close_time ) {
 
@@ -657,7 +664,7 @@ return true;
 //Process FSM Event - Demulitplex based on the fsm_curr_state and event type
 bool process_fsm_event(FSM_EVENT & fsm_ev) {
 	FSM_Event_Types ev_type = fsm_ev.type;	
-	//cout << "FSM Thread => dispatching event " << FSM_Event_Type_Name[ev_type] << " to handler function" << endl; 
+	//LOG(INFO)  << "FSM Thread => dispatching event " << FSM_Event_Type_Name[ev_type] << " to handler function" << endl; 
 	(*FSM_Ev_Handler_Table[fsm_curr_state][ev_type])(fsm_ev);
 
 return true;
@@ -693,7 +700,6 @@ bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 	//check if bar exists in outboud cache. emit the bar only in case of new bars / update of existing bars
 	auto it = outbound_cache.find(sym);
 	bool bar_exists = (it != outbound_cache.end());
-	//cout << "FSM Thread => bar_exists = " << bar_exists << endl;
 
 	if ( bar_exists == true ) {
 		BarCntxt prevctxt = it->second;
@@ -708,9 +714,9 @@ bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 		     bar_close_time == prevctxt.bar_close_time ) {
 			//the bar need not be emitted if the values have not changed
 			emit_bar = false;
-			//cout << "FSM Thread => Ignoring bar. No update in existing bar. " << "bartype = " << Bar_Type_Name[bt] 
-            //     << ", symbol = " << symbol 
-            //     << ", bar_num = " << bar_num << endl;
+			LOG(INFO)  << "Worker 2 (FSM Thread) => Ignoring bar. No update in existing bar. " << "bartype = " << Bar_Type_Name[bt] 
+                 << ", symbol = " << symbol 
+                 << ", bar_num = " << bar_num << endl;
 		}
 	}
 
@@ -722,18 +728,18 @@ bool fsm_emit_bar(BarCntxt barcntxt, Bar_Type bt){
 			//insert new entry in the outbound cache
 			outbound_cache.insert( pair<string, BarCntxt>(sym, barcntxt) );
 		}
-		//cout << "FSM Thread => Emiting Bar : " 
-		//             << "bartype = "          << Bar_Type_Name[bt] 
-		//             << ", symbol = "         << symbol 
-		//             << ", bar_num = "        << bar_num
-		//             << ", O = "              << bar_open
-		//             << ", H = "              << bar_high
-		//             << ", L = "              << bar_low
-		//             << ", C = "              << bar_close
-		//             << ", volume = "         << bar_volume
-		//             << ", bar_start_time = " << bar_start_time
-		//             << ", bar_close_time = " << bar_close_time
-		//             << endl;
+		LOG(INFO)  << "Worker 2 (FSM Thread) => Emiting Bar : " 
+		             << "bartype = "          << Bar_Type_Name[bt] 
+		             << ", symbol = "         << symbol 
+		             << ", bar_num = "        << bar_num
+		             << ", O = "              << bar_open
+		             << ", H = "              << bar_high
+		             << ", L = "              << bar_low
+		             << ", C = "              << bar_close
+		             << ", volume = "         << bar_volume
+		             << ", bar_start_time = " << bar_start_time
+		             << ", bar_close_time = " << bar_close_time
+		             << endl;
 
 		//write bar context into the pipe that takes the data to publisher thread
 		write(pfd_w2_w3[1], &barcntxt, sizeof(barcntxt));
@@ -752,7 +758,9 @@ public:
     }
 
     void onConnect(WebSocket* connection) override {
+
         _connections.insert(connection);
+
         std::cout << "Connected: " << connection->getRequestUri()
                   << " : " << formatAddress(connection->getRemoteAddress())
                   << "\nCredentials: " << *(connection->credentials()) << "\n";
@@ -863,8 +871,9 @@ public:
 				auto subset = it->second;
 
 				if (subset.find(ticker) != subset.end()) {
-        			std::cout << "Publishing bar to : " << connection->getRequestUri()
-                  	          << " : " << formatAddress(connection->getRemoteAddress()) << "\n";
+        			std::cout << "Publishing bar : " << connection->getRequestUri()
+                  	          << " : " << formatAddress(connection->getRemoteAddress()) 
+					          << "\n";
 					
 					connection->send(ss.str());
 				}
@@ -895,7 +904,8 @@ void *publisher_thread_publish_bars(void *msg)
 	fds[0].events = POLLIN;
 	BarCntxt barcntxt;
 
-	cout << "Starting Seasocks server" << endl;
+	LOG(INFO)  << "Starting Seasocks server" << endl;
+	cout       << "Starting Seasocks server" << endl;
 
 	//Seasocks logger
     auto logger = std::make_shared<PrintfLogger>(Logger::Level::Debug);
@@ -907,7 +917,8 @@ void *publisher_thread_publish_bars(void *msg)
     server.startListening(9090);
 
 	int server_fd = server.fd();
-	cout << "Websocks server fd : " << server_fd << endl;
+	LOG(INFO)  << "Websocks server fd : " << server_fd << endl;
+	cout       << "Websocks server fd : " << server_fd << endl;
 
 	//Register server fd for any subscription activity
 	fds[1].fd = server_fd;
@@ -930,7 +941,7 @@ void *publisher_thread_publish_bars(void *msg)
 			if (fds[0].revents & POLLIN) {
 
 				if ( fcntl( fds[0].fd, F_SETFL, fcntl(fds[0].fd, F_GETFL) | O_NONBLOCK ) < 0 ) {
-					cout << "Pubisher Thread => Error setting nonblocking flag for incoming bars data pipe" << endl;
+					LOG(INFO)  << "Pubisher Thread => Error setting nonblocking flag for incoming bars data pipe" << endl;
 					exit(0);
 				}
 
@@ -950,8 +961,8 @@ void *publisher_thread_publish_bars(void *msg)
 						pubs_bar_cache.insert( pair<string, BarCntxt>(symbol, barcntxt) );
 					}
 					
-					//TODO - Check the subscriptions and push the bar to subscribers thru appopriate client connection socket descriptors
-					//cout << "Publisher Thread => Read incoming bar : "
+					//Check the subscriptions and push the bar to subscribers thru appopriate client connection socket descriptors
+					//LOG(INFO)  << "Publisher Thread => Read incoming bar : "
 					//     << "sym = "              << barcntxt.sym 
 					//     << ", bar_num = "        << barcntxt.bar_num
 					//     << ", bar_start_time = " << barcntxt.bar_start_time
@@ -967,7 +978,8 @@ void *publisher_thread_publish_bars(void *msg)
 			}
 		}
 		else {
-			cout << "Publisher Thread => Timeout occured while reading bars data. No bars data to read" << endl;
+			LOG(INFO)  << "Publisher Thread => Timeout occured while reading bars data. No bars data to read" << endl;
+			cout       << "Publisher Thread => Timeout occured while reading bars data. No bars data to read" << endl;
 		}
 	}
 }
