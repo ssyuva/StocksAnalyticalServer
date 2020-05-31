@@ -5,7 +5,7 @@ echo "Cloning seasocks.."
 git clone https://github.com/mattgodbolt/seasocks
 
 echo "Installing seasocks.."
-cd Seasocks/seasocks
+cd seasocks
 mkdir build
 cd build
 cmake ..
